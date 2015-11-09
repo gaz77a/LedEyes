@@ -7,7 +7,7 @@
  * otherwise randomly display shifty, surprised, happy, sad, crying or mad eyes.
  */
  
-#include "LedControlMS.h" // https://github.com/shaai/Arduino_LED_matrix_sketch/blob/master/LedControlMS.h
+#include "LedControlMS.h" // https://github.com/shaai/Arduino_LED_matrix_sketch
 #include "LedEyes.h" 
 #include <stdlib.h>
 #include "Streaming.h" // http://arduiniana.org/libraries/streaming/

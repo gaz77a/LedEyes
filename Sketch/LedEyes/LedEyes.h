@@ -13,7 +13,7 @@ const int EchoPin = 4;
 
 // Photocell
 const int PhotocellPin = A0; // the cell is connected to a0
-const int SleepThreshold = 100; // Go to sleep if the light is lower than 100
+const int SleepThreshold = 60; // Go to sleep if the light is lower than 100
 
 // Cross-eyed 
 const int CrossEyedDistance = 10;
