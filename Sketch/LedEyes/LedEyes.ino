@@ -1,635 +1,645 @@
-/*
- * Bender:
- * Bender starts asleep 
+/**
+ * Halloween LED Matrix Eyes, and flicker candle white LED.
  * 
- * If it is dark Bender goes to sleep
- * otherwise if someone is close then he goes cross-eyed
- * otherwise randomly display shifty, surprised, happy, sad, crying or mad eyes.
  */
- 
-#include "LedControlMS.h" // https://github.com/shaai/Arduino_LED_matrix_sketch
-#include "LedEyes.h" 
-#include <stdlib.h>
-#include "Streaming.h" // http://arduiniana.org/libraries/streaming/
+#include <TimerOne.h>
 
-// Note: 
-// On a Vista machine the USB 2 drivers for the Arduino clone were not found
-// I needed to download http://www.wch.cn/download/CH341SER_ZIP.html and manually point to the drivers
-// This was not needed on Windows 7 or when using a Duinotech or a Freetronics board.
+//We always have to include the LedControl library
+#include "LedControl.h"
 
 /*
- * LED Matrix:
- * Use pins 12, 11 and 10 on the Arduino for the SPI interface
- * Pin 12 is connected to the DATA IN-pin of the first MAX7221
- * Pin 11 is connected to the CLK-pin of the first MAX7221
- * Pin 10 is connected to the LOAD(/CS)-pin of the first MAX7221
- */
+  Create LedControl object, define pin connections
+  We have 2 MAX72XX for eyes.
+*/
+#define PIN_EYES_DIN 12
+#define PIN_EYES_CS 11
+#define PIN_EYES_CLK 10
+LedControl lc = LedControl(PIN_EYES_DIN, PIN_EYES_CLK, PIN_EYES_CS, 2);
 
- /* Ultrasonic sensor:
-  * VCC connection of the sensor attached to +5V
-  * GND connection of the sensor attached to ground
-  * TRIG connection of the sensor attached to digital pin 3
-  * ECHO connection of the sensor attached to digital pin 4
-  */
 
-/* Photocell sensor:
-  * VCC connection of the sensor attached to +5V
-  * GND connection of the sensor attached to ground
-  * SIGNAL connection of the sensor attached to analog pin A0
-  */
+#define CANDLE_LED_PIN  5
 
-  
 
-LedControl lc = LedControl(12, 11, 10, NumDevices ); // Note this will set lc1.getDeviceCount() = 2
-bool isSleeping; // True if it is dark and Bender is sleeping
+// rotation
+bool rotateMatrix0 = false;  // rotate 0 matrix by 180 deg
+bool rotateMatrix1 = false;  // rotate 1 matrix by 180 deg
 
+// define eye ball without pupil
+byte eyeBall[8] = {
+  B00111100,
+  B01111110,
+  B11111111,
+  B11111111,
+  B11111111,
+  B11111111,
+  B01111110,
+  B00111100
+};
+
+byte eyePupil = B11100111;
+
+// stores current state of LEDs
+byte eyeCurrent[8];
+int currentX;
+int currentY;
+int cntLoop = 0;
+int cntEffect = 0;
+
+// min and max pupil positions
+#define MIN -2
+#define MAX  2
+
+// delays
+#define DELAY_BLINK 40
+
+// perform an effect every # of loop iterations, 0 to disable
+//#define EFFECT_ITERATION 4
+#define EFFECT_ITERATION 0
+
+
+void blinkCandleLED(void)
+{
+  //analogWrite(CANDLE_LED_PIN, random(100) + 154); // low flicker
+  //analogWrite(CANDLE_LED_PIN, random(191) + 64); // medium flicker
+  analogWrite(CANDLE_LED_PIN, random(210) + 40); // high flicker
+}
+
+
+
+/*
+  Arduino setup
+*/
 void setup()
 {
-  // initialize serial communication:
-  // Used for output only
-  Serial.begin (38400);
+  pinMode(CANDLE_LED_PIN, OUTPUT);
+  Timer1.initialize(150000);  // blinkCandleLED to run every 0.15 seconds
+  Timer1.attachInterrupt(blinkCandleLED);
 
-  // Init Ultrasonic sensor
-  pinMode(TrigPin, OUTPUT);
-  pinMode(EchoPin, INPUT);
 
-  // Init the LED Matrix
-  for (int i = 0; i < NumDevices ; i++)
+  // MAX72XX is in power-saving mode on startup, we have to do a wakeup call
+  lc.shutdown(0, false);
+  lc.shutdown(1, false);
+
+  // set the brightness to low
+  lc.setIntensity(0, 1);
+  lc.setIntensity(1, 1);
+
+  // clear both modules
+  lc.clearDisplay(0);
+  lc.clearDisplay(1);
+
+  // LED test
+  // MSB near chip, LSB furthest from chip
+  
+  // vertical line
+  byte b = B10000000;
+  for (int c = 0; c <= 7; c++)
   {
-    // wake up the LED matrix from power-saving mode
-    lc.shutdown(i, false);
-    /* and clear the display */
-    lc.clearDisplay(i);
+    for (int r = 0; r <= 7; r++)
+    {
+      setRow(0, r, b);
+      setRow(1, r, b);
+    }
+    b = b >> 1;
+    delay(100);
+  }
+  
+  // full module
+  b = B11111111;
+  for (int r = 0; r <= 7; r++)
+  {
+    setRow(0, r, b);
+    setRow(1, r, b);
+  }
+  delay(500);
+
+  // clear both modules
+  lc.clearDisplay(0);
+  lc.clearDisplay(1);
+  delay(500);
+
+  // random seed
+  randomSeed(analogRead(0));
+
+  //  crazy blink (alternate: blink matrix 0, then 1)
+  blinkEyes(true, false);
+  blinkEyes(false, true);
+  delay(1000);
+
+  // look center, up, left, down, right crazy blink (alternate: blink matrix 0, then 1)
+  displayEyes(0, 0);
+  delay(1000);
+  moveEyes(0, 2, 100);
+  delay(1000);
+  moveEyes(2, 0, 100);
+  delay(1000);
+  moveEyes(0, -2, 100);
+  delay(1000);
+  moveEyes(-2, 0, 100);
+  delay(1000);
+  moveEyes(0, 0, 100);
+  delay(1000);
+
+}
+
+
+
+
+/*
+  Arduino loop
+*/
+void loop()
+{
+  //analogWrite(LED_PIN, random(191)+64);
+
+  // move to random position, wait random time
+  moveEyes(random(MIN, MAX + 1), random(MIN, MAX + 1), 50);
+  delay(random(5, 7) * 500);
+
+  // blink time?
+  //if (random(0, 5) == 0)
+  if (random(0, 4) == 0)
+  {
+    delay(500);
+    blinkEyes();
+    delay(500);
   }
 
-  // Bender wakes from sleeping
-  DisplaySleepEyes();
-  isSleeping = true;
+  // effect time?
+  if (EFFECT_ITERATION > 0)
+  {
+    cntLoop++;
+    if (cntLoop == EFFECT_ITERATION)
+    {
+      cntLoop = 0;
+      if (cntEffect > 6) cntEffect = 0;
+      switch (cntEffect)
+      {
+        case 0: // cross eyes
+          crossEyes();
+          delay(1000);
+          break;
+
+        case 1: // round spin
+          roundSpin(2);
+          delay(1000);
+          break;
+
+        case 2: // crazy spin
+          crazySpin(2);
+          delay(1000);
+          break;
+
+        case 3: // meth eyes
+          methEyes();
+          delay(1000);
+          break;
+
+        case 4: // lazy eye
+          lazyEye();
+          delay(1000);
+          break;
+
+        case 5: // crazy blink
+          blinkEyes(true, false);
+          blinkEyes(false, true);
+          delay(1000);
+          break;
+
+        case 6: // glow
+          glowEyes(3);
+          delay(1000);
+          break;
+
+        default:
+          break;
+      }
+      cntEffect++;
+    }
+  }
 }
 
 /*
- * If it is dark Bender goes to sleep
- * otherwise if someone is close thenhe goes cross-eyed
- * otherwise randomly display shifty, surprised, happy, sad, crying or mad eyes.
- */
-void loop()
+  This method blinks both eyes
+*/
+void blinkEyes()
 {
-  Serial << "Start of loop" << endl;
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-    
-  if (photocellReading < SleepThreshold)
-  {
-    if (!isSleeping)
-    {
-      ChangeIntensityFromTo(WakeLedIntensity, SleepLedIntensity);
-      isSleeping = true;
-    }
+  blinkEyes(true, true);
+}
 
-    Serial << "Go to Sleep" << endl;    
-    DisplaySleepEyes();
+/*
+  This method blinks eyes as per provided params
+*/
+void blinkEyes(boolean blinkLeft, boolean blinkRight)
+{
+  // blink?
+  if (!blinkLeft && !blinkRight)
+    return;
+
+  // close eyelids
+  for (int i = 0; i <= 3; i++)
+  {
+    if (blinkLeft)
+    {
+      setRow(0, i, 0);
+      setRow(0, 7 - i, 0);
+    }
+    if (blinkRight)
+    {
+      setRow(1, i, 0);
+      setRow(1, 7 - i, 0);
+    }
+    delay(DELAY_BLINK);
   }
-  else
-  {
-    if (isSleeping)
-    {
-      Serial << "Waking up" << endl;    
-      ChangeIntensityFromTo(SleepLedIntensity, WakeLedIntensity);
-      isSleeping = false;
-    }
 
-    if (distance < CrossEyedDistance)
+  // open eyelids
+  for (int i = 3; i >= 0; i--)
+  {
+    if (blinkLeft)
     {
-      Serial << "Cross Eyed" << endl;
-      DisplayCrossEyedWhileSomeoneClose();
+      setRow(0, i, eyeCurrent[i]);
+      setRow(0, 7 - i, eyeCurrent[7 - i]);
     }
-    else if (distance < MidCrossEyedDistance)
+    if (blinkRight)
     {
-      Serial << "Med Cross Eyed" << endl;
-      DisplayMedCrossEyedWhileSomeoneClose();
+      setRow(1, i, eyeCurrent[i]);
+      setRow(1, 7 - i, eyeCurrent[7 - i]);
     }
-    else if (distance < SemiCrossEyedDistance)
+    delay(DELAY_BLINK);
+  }
+}
+
+/*
+  This methods moves eyes to center position,
+  then moves horizontally with wrapping around edges.
+*/
+void crazySpin(int times)
+{
+  if (times == 0)
+    return;
+
+  moveEyes(0, 0, 50);
+  delay(500);
+
+  byte row = eyePupil;
+  for (int t = 0; t < times; t++)
+  {
+    // spin from center to L
+    for (int i = 0; i < 5; i++)
     {
-      Serial << "Semi Cross Eyed" << endl;
-      DisplaySemiCrossEyedWhileSomeoneClose();
+      row = row >> 1;
+      row = row | B10000000;
+      setRow(0, 3, row);  setRow(1, 3, row);
+      setRow(0, 4, row);  setRow(1, 4, row);
+      delay(50);
+      if (t == 0)
+        delay((5 - i) * 10); // increase delay on 1st scroll (speed up effect)
+    }
+    // spin from R to center
+    for (int i = 0; i < 5; i++)
+    {
+      row = row >> 1;
+      if (i >= 2)
+        row = row | B10000000;
+      setRow(0, 3, row);  setRow(1, 3, row);
+      setRow(0, 4, row);  setRow(1, 4, row);
+      delay(50);
+      if (t == (times - 1))
+        delay((i + 1) * 10); // increase delay on last scroll (slow down effect)
+    }
+  }
+}
+
+/*
+  This method crosses eyes
+*/
+void crossEyes()
+{
+  moveEyes(0, 0, 50);
+  delay(500);
+
+  byte pupilR = eyePupil;
+  byte pupilL = eyePupil;
+
+  // move pupils together
+  for (int i = 0; i < 2; i++)
+  {
+    pupilR = pupilR >> 1;
+    pupilR = pupilR | B10000000;
+    pupilL = pupilL << 1;
+    pupilL = pupilL | B1;
+
+    setRow(0, 3, pupilR); setRow(1, 3, pupilL);
+    setRow(0, 4, pupilR); setRow(1, 4, pupilL);
+
+    delay(100);
+  }
+
+  delay(2000);
+
+  // move pupils back to center
+  for (int i = 0; i < 2; i++)
+  {
+    pupilR = pupilR << 1;
+    pupilR = pupilR | B1;
+    pupilL = pupilL >> 1;
+    pupilL = pupilL | B10000000;
+
+    setRow(0, 3, pupilR); setRow(1, 3, pupilL);
+    setRow(0, 4, pupilR); setRow(1, 4, pupilL);
+
+    delay(100);
+  }
+}
+
+/*
+  This method displays eyeball with pupil offset by X, Y values from center position.
+  Valid X and Y range is [MIN,MAX]
+  Both LED modules will show identical eyes
+*/
+void displayEyes(int offsetX, int offsetY)
+{
+  // ensure offsets are  in valid ranges
+  offsetX = getValidValue(offsetX);
+  offsetY = getValidValue(offsetY);
+
+  // calculate indexes for pupil rows (perform offset Y)
+  int row1 = 3 - offsetY;
+  int row2 = 4 - offsetY;
+
+  // define pupil row
+  byte pupilRow = eyePupil;
+
+  // perform offset X
+  // bit shift and fill in new bit with 1
+  if (offsetX > 0) {
+    for (int i = 1; i <= offsetX; i++)
+    {
+      pupilRow = pupilRow >> 1;
+      pupilRow = pupilRow | B10000000;
+    }
+  }
+  else if (offsetX < 0) {
+    for (int i = -1; i >= offsetX; i--)
+    {
+      pupilRow = pupilRow << 1;
+      pupilRow = pupilRow | B1;
+    }
+  }
+
+  // pupil row cannot have 1s where eyeBall has 0s
+  byte pupilRow1 = pupilRow & eyeBall[row1];
+  byte pupilRow2 = pupilRow & eyeBall[row2];
+
+  // display on LCD matrix, update to eyeCurrent
+  for (int r = 0; r < 8; r++)
+  {
+    if (r == row1)
+    {
+      setRow(0, r, pupilRow1);
+      setRow(1, r, pupilRow1);
+      eyeCurrent[r] = pupilRow1;
+    }
+    else if (r == row2)
+    {
+      setRow(0, r, pupilRow2);
+      setRow(1, r, pupilRow2);
+      eyeCurrent[r] = pupilRow2;
     }
     else
     {
-      int randomNumber = GetRandomPercentage();
-      Serial << "Choose eye based on the random Number: " << randomNumber << endl << endl;
-
-      if (randomNumber < 10)
-      {
-        Serial << "Surprised Eyed" << endl;
-        DisplaySurprisedEyesIfNoOneClose();
-      }
-      else if (randomNumber < 20)
-      {
-        Serial << "Happy Eyed" << endl;
-        DisplayHappyEyesIfNoOneClose();
-      }
-      else if (randomNumber < 30)
-      {
-        Serial << "Sad Eyed" << endl;
-        DisplaySadEyesIfNoOneClose();
-      }
-      else if (randomNumber < 50)
-      {
-        Serial << "Crying Eyes" << endl;
-        DisplayCryEyesIfNoOneClose();
-      }
-      else if (randomNumber < 60)
-      {
-        Serial << "Mad Eyes" << endl;
-        DisplayMadEyesIfNoOneClose();
-      }
-      else
-      {
-        Serial << "Shifty Eyed" << endl;
-        DisplayShiftyEyesLookingLeftAndRightIfNoOneClose();
-      }
+      setRow(0, r, eyeBall[r]);
+      setRow(1, r, eyeBall[r]);
+      eyeCurrent[r] = eyeBall[r];
     }
   }
 
-  Serial << endl << endl;
+  // update current X and Y
+  currentX = offsetX;
+  currentY = offsetY;
 }
 
-
-/*********************
- * Sleep Eyes    *
- *********************/
-void DisplaySleepEyes()
+/*
+  This method corrects provided coordinate value
+*/
+int getValidValue(int value)
 {
-  /* Set the brightness to its lowest values */
-  SetIntensity(1);
-
-  DisplayEyes( shiftyPartialClosedEye, shiftyPartialClosedEye, 200);
-  DisplayEyes( shiftyClosedEye, shiftyClosedEye, 1000);
-}
-
-
-/*********************
- * Shifty Eyes    *
- *********************/
-void DisplayShiftyEyesLookingLeftAndRightIfNoOneClose()
-{
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold; i++)
-  {
-    int randomNumber = GetRandomPercentage();
-
-    // Choose the shifty eye variant
-    if (randomNumber < 10)
-    {
-      DisplayShiftyEyesLookingLeftAndRightWhileBlinkingLeft();
-    }
-    else if (randomNumber < 20)
-    {
-      DisplayShiftyEyesLookingLeftAndRightWhileBlinkingRight();
-    }
-    else if (randomNumber < 25)
-    {
-      DisplayShiftyEyesLookingLeftAndRightWhileBlinkingBoth();
-    }
-    else if (randomNumber < 35)
-    {
-      DisplayShiftyEyesLookingInACircle();
-    }
-    else
-    {
-      DisplayShiftyEyesLookingLeftAndRight();
-    }
-
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-}
-
-void DisplayCrossEyedWhileSomeoneClose()
-{
-  DisplayEyes( shiftyPupilEye4, shiftyPupilEye1, 100);
-}
-
-void DisplayMedCrossEyedWhileSomeoneClose()
-{
-  DisplayEyes( shiftyPupilEye3, shiftyPupilEye2, 100);
-}
-
-void DisplaySemiCrossEyedWhileSomeoneClose()
-{
-  DisplayEyes( shiftyPupilEye2, shiftyPupilEye3, 100);
-}
-
-void DisplayShiftyEyesLookingLeftAndRight()
-{
-  DisplayEyes( shiftyPupilEye1, shiftyPupilEye1, 100);
-  DisplayEyes( shiftyPupilEye2, shiftyPupilEye2, 100);
-  DisplayEyes( shiftyPupilEye3, shiftyPupilEye3, 100);
-  DisplayEyes( shiftyPupilEye4, shiftyPupilEye4, 100);
-  DisplayEyes( shiftyPupilEye3, shiftyPupilEye3, 100);
-  DisplayEyes( shiftyPupilEye2, shiftyPupilEye2, 100);
-}
-
-void DisplayShiftyEyesLookingInACircle()
-{
-  DisplayEyes( shiftyPupilEye1, shiftyPupilEye1, 100);
-  DisplayEyes( shiftyPupilEye2, shiftyPupilEye2, 100);
-  DisplayEyes( shiftyPupilEye3, shiftyPupilEye3, 100);
-  DisplayEyes( shiftyPupilEye4, shiftyPupilEye4, 100);
-  DisplayEyes( shiftyPupilEye5, shiftyPupilEye5, 100);
-  DisplayEyes( shiftyPupilEye6, shiftyPupilEye6, 100);
-  DisplayEyes( shiftyPupilEye7, shiftyPupilEye7, 100);
-  DisplayEyes( shiftyPupilEye8, shiftyPupilEye8, 100);
-}
-
-void DisplayShiftyEyesLookingLeftAndRightWhileBlinkingRight()
-{
-  DisplayEyes( shiftyPupilEye1,        shiftyPupilEye1, 100);
-  DisplayEyes( shiftyPartialClosedEye, shiftyPupilEye1, 100);
-  DisplayEyes( shiftyClosedEye,        shiftyPupilEye2, 100);
-  DisplayEyes( shiftyPartialClosedEye, shiftyPupilEye3, 100);
-  DisplayEyes( shiftyPupilEye4,        shiftyPupilEye4, 100);
-  DisplayEyes( shiftyPupilEye3,        shiftyPupilEye3, 100);
-  DisplayEyes( shiftyPupilEye2,        shiftyPupilEye2, 100);
-}
-
-void DisplayShiftyEyesLookingLeftAndRightWhileBlinkingLeft()
-{
-  DisplayEyes( shiftyPupilEye1, shiftyPupilEye1,        100);
-  DisplayEyes( shiftyPupilEye1, shiftyPartialClosedEye, 100);
-  DisplayEyes( shiftyPupilEye2, shiftyClosedEye,        100);
-  DisplayEyes( shiftyPupilEye3, shiftyPartialClosedEye, 100);
-  DisplayEyes( shiftyPupilEye4, shiftyPupilEye4,        100);
-  DisplayEyes( shiftyPupilEye3, shiftyPupilEye3,        100);
-  DisplayEyes( shiftyPupilEye2, shiftyPupilEye2,        100);
-}
-
-void DisplayShiftyEyesLookingLeftAndRightWhileBlinkingBoth()
-{
-  DisplayEyes( shiftyPupilEye1,        shiftyPupilEye1,        100);
-  DisplayEyes( shiftyPartialClosedEye, shiftyPartialClosedEye, 100);
-  DisplayEyes( shiftyClosedEye,        shiftyClosedEye,        100);
-  DisplayEyes( shiftyPartialClosedEye, shiftyPartialClosedEye, 100);
-  DisplayEyes( shiftyPupilEye4,        shiftyPupilEye4,        100);
-  DisplayEyes( shiftyPupilEye3,        shiftyPupilEye3,        100);
-  DisplayEyes( shiftyPupilEye2,        shiftyPupilEye2,        100);
-}
-
-/*********************
- * Surprised Eyes    *
- *********************/
-void DisplaySurprisedEyesIfNoOneClose()
-{
-  DisplayShiftyToSurprisedEyes();
-
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  int randomNumber = GetRandomPercentage();
-
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold && randomNumber < ShowEyeDurationRandomiser; i++)
-  {
-    DisplaySurprisedEyes();
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-
-  DisplaySurprisedToShiftyEyes();
-}
-
-void DisplaySurprisedEyes()
-{
-  DisplayEyes( surprisedEye, surprisedEye, 100);
-}
-
-void DisplayShiftyToSurprisedEyes()
-{
-  DisplayEyes( shiftyEye,         shiftyEye,         100);
-  DisplayEyes( shiftyToSurprised, shiftyToSurprised, 100);
-  DisplayEyes( surprisedEye,      surprisedEye,      100);
-}
-
-void DisplaySurprisedToShiftyEyes()
-{
-  DisplayEyes( surprisedEye,      surprisedEye,      100);
-  DisplayEyes( shiftyToSurprised, shiftyToSurprised, 100);
-  DisplayEyes( shiftyEye,         shiftyEye,         100);
-}
-
-/*********************
- * Happy Eyes        *
- *********************/
-void DisplayHappyEyesIfNoOneClose()
-{
-  DisplayShiftyToHappyEyes();
-
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  int randomNumber = GetRandomPercentage();
-
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold && randomNumber < ShowEyeDurationRandomiser; i++)
-  {
-    DisplayHappyEyes();
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-
-  DisplayHappyToShiftyEyes();
-}
-
-void DisplayHappyEyes()
-{
-  DisplayEyes( happyEye, happyEye, 100);
-}
-
-void DisplayShiftyToHappyEyes()
-{
-  DisplayEyes( shiftyEye,     shiftyEye,     100);
-  DisplayEyes( shiftyToHappy, shiftyToHappy, 100);
-  DisplayEyes( happyEye,      happyEye,      100);
-}
-
-void DisplayHappyToShiftyEyes()
-{
-  DisplayEyes( surprisedEye,   surprisedEye,  100);
-  DisplayEyes( shiftyToHappy,  shiftyToHappy, 100);
-  DisplayEyes( shiftyEye,      shiftyEye,     100);
-}
-
-
-/*********************
- * Sad Eyes        *
- *********************/
-void DisplaySadEyesIfNoOneClose()
-{
-  DisplayShiftyToSadEyes();
-
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  int randomNumber = GetRandomPercentage();
-
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold && randomNumber < ShowEyeDurationRandomiser; i++)
-  {
-    DisplaySadEyes();
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-
-  DisplaySadToShiftyEyes();
-}
-
-void DisplaySadEyes()
-{
-  DisplayEyes( sadEye, sadEye, 100);
-}
-
-void DisplayShiftyToSadEyes()
-{
-  DisplayEyes( shiftyEye,   shiftyEye,   100);
-  DisplayEyes( shiftyToSad, shiftyToSad, 100);
-  DisplayEyes( sadEye,      sadEye,      100);
-}
-
-void DisplaySadToShiftyEyes()
-{
-  DisplayEyes( sadEye,       sadEye,      100);
-  DisplayEyes( shiftyToSad,  shiftyToSad, 100);
-  DisplayEyes( shiftyEye,    shiftyEye,   100);
-}
-
-/*********************
- * Cry Eyes          *
- *********************/
-void DisplayCryEyesIfNoOneClose()
-{
-  DisplayShiftyToCryEyes();
-
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  int randomNumber = GetRandomPercentage();
-
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold && randomNumber < ShowEyeDurationRandomiser; i++)
-  {
-    DisplayCryEyes();
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-
-  DisplayCryToShiftyEyes();
-}
-
-void DisplayCryEyes()
-{
-  DisplayEyes( cryEye,      cryEye,      100);
-  DisplayEyes( shiftyToCry, shiftyToCry, 100);
-  DisplayEyes( shiftyEye,   shiftyEye,   100);
-  DisplayEyes( shiftyToCry, shiftyToCry, 100);
-  DisplayEyes( cryEye,      cryEye,      100);
-}
-
-void DisplayShiftyToCryEyes()
-{
-  DisplayEyes( shiftyEye,   shiftyEye,   100);
-  DisplayEyes( shiftyToCry, shiftyToCry, 100);
-  DisplayEyes( cryEye,      cryEye,      100);
-}
-
-void DisplayCryToShiftyEyes()
-{
-  DisplayEyes( cryEye,       cryEye,      100);
-  DisplayEyes( shiftyToCry,  shiftyToCry, 100);
-  DisplayEyes( shiftyEye,    shiftyEye,   100);
-}
-
-
-/*********************
- * Mad Eyes          *
- *********************/
-void DisplayMadEyesIfNoOneClose()
-{
-  DisplayShiftyToMadEyes();
-
-  float distance = GetDistance();
-  int photocellReading = ReadLightSensor();
-  int randomNumber = GetRandomPercentage();
-
-  for (int i = 0; i < NumEyesShown && distance >= SemiCrossEyedDistance && photocellReading >= SleepThreshold && randomNumber < ShowEyeDurationRandomiser; i++)
-  {
-    DisplayMadEyes();
-    distance = GetDistance();
-    photocellReading = ReadLightSensor();
-  }
-
-  DisplayMadToShiftyEyes();
-}
-
-void DisplayMadEyes()
-{
-  DisplayEyes( madEyeLeft, madEyeRight, 100);
-}
-
-void DisplayShiftyToMadEyes()
-{
-  DisplayEyes( shiftyEye,       shiftyEye,        100);
-  DisplayEyes( madLeftToShifty, madRightToShifty, 100);
-  DisplayEyes( madEyeLeft,      madEyeRight,      100);
-}
-
-void DisplayMadToShiftyEyes()
-{
-  DisplayEyes( madEyeLeft,      madEyeRight,      100);
-  DisplayEyes( madLeftToShifty, madRightToShifty, 100);
-  DisplayEyes( shiftyEye,       shiftyEye,        100);
-}
-
-
-/*********************
- * Common            *
- *********************/
-void DisplayEyes( EyeDataType leftEyeData, EyeDataType rightEyeData, int delayMs )
-{
-  {
-    DisplayEye(LeftEyePos, leftEyeData);
-    DisplayEye(RightEyePos, rightEyeData);
-
-    delay(delayMs);
-  }
-}
-
-void DisplayEye( int eyePos, EyeDataType eyeArrary )
-{
-  for (int j = 0; j < LedCols; j++)
-  {
-    // Note: setRow(addr,row,value)
-    lc.setRow(eyePos, j, eyeArrary.EyeData[j]);
-  }
-}
-
-// Return a number between 0 and 99;
-int GetRandomPercentage()
-{
-  int result = rand() % 100;
-  return result;
-}
-
-/*********************
- * Distance          *
- *********************/
-
-float GetDistance()
-{
-  const float TooClose = 2.00;
-  const float OutOfRange = 450.00;
-
-  unsigned long duration;
-  float result;
-
-  // The sensor is triggered by a HIGH pulse of 10 or more microseconds.
-  // Give a short LOW pulse beforehand to ensure a clean HIGH pulse:
-  digitalWrite(TrigPin, LOW);
-  delayMicroseconds(2);
-  digitalWrite(TrigPin, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TrigPin, LOW);
-
-  // Read the signal from the sensor: a HIGH pulse whose
-  // duration is the time (in microseconds) from the sending
-  // of the ping to the reception of its echo off of an object.
-  duration = pulseIn(EchoPin, HIGH);
-  result = MicrosecondsToCentimeters(duration);
-
-  Serial << "Distance: " << result << "cm";
-  
-  if (result <= TooClose)
-  {
-    Serial << " - too close";
-  }
-  else if (result >= OutOfRange)
-  {
-    Serial << " - out of range";
-  }
-
-  Serial << endl;
-  
-  return result;
-}
-
-// The speed of sound is 340.29 m/s or 29.3866996 microseconds per centimeter.
-// The ping travels out and back, so to find the distance of the
-// object we take half of the distance travelled.
-float MicrosecondsToCentimeters(long microseconds)
-{
-  const float speedOfSoundMicroSecondsperCentimeter = 29.3866996;
-
-  return microseconds / speedOfSoundMicroSecondsperCentimeter / 2;  // Divide by two as the sound has travelled to the object and back again.
-}
-
-
-/*********************
- * Light Sensor      *
- *********************/
-int ReadLightSensor()
-{
-  int result = analogRead(PhotocellPin);
-  Serial << "Light Sensor reading: = " << result << endl;     // the raw analog reading
-
-  return result;
-}
-
-void ChangeIntensityFromTo(int curIntensity, int newIntensity)
-{
-  if (curIntensity < newIntensity)
-  {
-    for (int i = curIntensity; i <= newIntensity ; i++)
-    {
-      SetIntensity(i);
-      delay(100);
-    }
-  }
+  if (value > MAX)
+    return MAX;
+  else if (value < MIN)
+    return MIN;
   else
+    return value;
+}
+
+/*
+  This method pulsates eye (changes LED brightness)
+*/
+void glowEyes(int times)
+{
+  for (int t = 0; t < times; t++)
   {
-    for (int i = curIntensity; i >= newIntensity ; i--)
+    for (int i = 2; i <= 8; i++)
     {
-      SetIntensity(i);
-      delay(100);
+      lc.setIntensity(0, i);
+      lc.setIntensity(1, i);
+      delay(50);
     }
-  }
 
+    delay(250);
+
+    for (int i = 7; i >= 1; i--)
+    {
+      lc.setIntensity(0, i);
+      lc.setIntensity(1, i);
+      delay(25);
+    }
+
+    delay(150);
+  }
 }
 
-void SetIntensity(int intensity)
+/*
+  This method moves eyes to center, out and then back to center
+*/
+void methEyes()
 {
-  for (int i = 0; i < NumDevices ; i++)
+  moveEyes(0, 0, 50);
+  delay(500);
+
+  byte pupilR = eyePupil;
+  byte pupilL = eyePupil;
+
+  // move pupils out
+  for (int i = 0; i < 2; i++)
   {
-    /* Set the brightness to a medium values */
-    lc.setIntensity(i, intensity);
+    pupilR = pupilR << 1;
+    pupilR = pupilR | B1;
+    pupilL = pupilL >> 1;
+    pupilL = pupilL | B10000000;
+
+    setRow(0, 3, pupilR); setRow(1, 3, pupilL);
+    setRow(0, 4, pupilR); setRow(1, 4, pupilL);
+
+    delay(100);
   }
-}
 
+  delay(2000);
 
-/**********************
- * Not used currently *
- **********************/
-void DisplayTransition( TwoEyeTransistionType twoEyeTransition )
-{
-  DisplaytwoEyes(twoEyeTransition.TwoEyeData1, 0);
-  delay(twoEyeTransition.Delay1);
-
-  DisplaytwoEyes(twoEyeTransition.TwoEyeData2, 0);
-  delay(twoEyeTransition.Delay2);
-
-  DisplaytwoEyes(twoEyeTransition.TwoEyeData3, 0);
-  delay(twoEyeTransition.Delay3);
-}
-
-void DisplaytwoEyes( TwoEyeDataType twoEyeData, int delayMs )
-{
+  // move pupils back to center
+  for (int i = 0; i < 2; i++)
   {
-    DisplayEye(LeftEyePos, twoEyeData.LeftEye);
-    DisplayEye(RightEyePos, twoEyeData.RightEye);
+    pupilR = pupilR >> 1;
+    pupilR = pupilR | B10000000;
+    pupilL = pupilL << 1;
+    pupilL = pupilL | B1;
 
-    delay(delayMs);
+    setRow(0, 3, pupilR); setRow(1, 3, pupilL);
+    setRow(0, 4, pupilR); setRow(1, 4, pupilL);
+
+    delay(100);
   }
 }
+
+/*
+  This method moves both eyes from current position to new position
+*/
+void moveEyes(int newX, int newY, int stepDelay)
+{
+  // set current position as start position
+  int startX = currentX;
+  int startY = currentY;
+
+  // fix invalid new X Y values
+  newX = getValidValue(newX);
+  newY = getValidValue(newY);
+
+  // eval steps
+  int stepsX = abs(currentX - newX);
+  int stepsY = abs(currentY - newY);
+
+  // need to change at least one position
+  if ((stepsX == 0) && (stepsY == 0))
+    return;
+
+  // eval direction of movement, # of steps, change per X Y step, perform move
+  int dirX = (newX >= currentX) ? 1 : -1;
+  int dirY = (newY >= currentY) ? 1 : -1;
+  int steps = (stepsX > stepsY) ? stepsX : stepsY;
+  int intX, intY;
+  float changeX = (float)stepsX / (float)steps;
+  float changeY = (float)stepsY / (float)steps;
+  for (int i = 1; i <= steps; i++)
+  {
+    intX = startX + round(changeX * i * dirX);
+    intY = startY + round(changeY * i * dirY);
+    displayEyes(intX, intY);
+    delay(stepDelay);
+  }
+}
+
+/*
+  This method lowers and raises right pupil only
+*/
+void lazyEye()
+{
+  moveEyes(0, 1, 50);
+  delay(500);
+
+  // lower left pupil slowly
+  for (int i = 0; i < 3; i++)
+  {
+    setRow(1, i + 2, eyeBall[i + 2]);
+    setRow(1, i + 3, eyeBall[i + 3] & eyePupil);
+    setRow(1, i + 4, eyeBall[i + 4] & eyePupil);
+    delay(150);
+  }
+
+  delay(1000);
+
+  // raise left pupil quickly
+  for (int i = 0; i < 3; i++)
+  {
+    setRow(1, 4 - i, eyeBall[4 - i] & eyePupil);
+    setRow(1, 5 - i, eyeBall[5 - i] & eyePupil);
+    setRow(1, 6 - i, eyeBall[6 - i]);
+    delay(25);
+  }
+}
+
+/*
+  This method spins pupils clockwise
+*/
+void roundSpin(int times)
+{
+  if (times == 0)
+    return;
+
+  moveEyes(2, 0, 50);
+  delay(500);
+
+  for (int i = 0; i < times; i++)
+  {
+    displayEyes(2, -1); delay(40); if (i == 0) delay(40);
+    displayEyes(1, -2); delay(40); if (i == 0) delay(30);
+    displayEyes(0, -2); delay(40); if (i == 0) delay(20);
+    displayEyes(-1, -2); delay(40); if (i == 0) delay(10);
+    displayEyes(-2, -1); delay(40);
+    displayEyes(-2, 0); delay(40);
+    displayEyes(-2, 1); delay(40); if (i == (times - 1)) delay(10);
+    displayEyes(-1, 2); delay(40); if (i == (times - 1)) delay(20);
+    displayEyes(0, 2); delay(40); if (i == (times - 1)) delay(30);
+    displayEyes(1, 2); delay(40); if (i == (times - 1)) delay(40);
+    displayEyes(2, 1); delay(40); if (i == (times - 1)) delay(50);
+    displayEyes(2, 0); delay(40);
+  }
+}
+
+
+/*
+  This method sets values to matrix row
+  Performs 180 rotation if needed
+*/
+void setRow(int addr, int row, byte rowValue)
+{
+  if (((addr == 0) && (rotateMatrix0)) || (addr == 1 && rotateMatrix1))
+  {
+    row = abs(row - 7);
+    rowValue = bitswap(rowValue);
+  }
+
+  lc.setRow(addr, row, rowValue);
+}
+
+
+/*
+  Reverse bits in byte
+  http://www.nrtm.org/index.php/2013/07/25/reverse-bits-in-a-byte/
+*/
+byte bitswap (byte x)
+{
+  byte result;
+
+  asm("mov __tmp_reg__, %[in] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* shift out high bit to carry */
+      "ror %[out] \n\t"  /* rotate carry __tmp_reg__to low bit (eventually) */
+      "lsl __tmp_reg__  \n\t"   /* 2 */
+      "ror %[out] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* 3 */
+      "ror %[out] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* 4 */
+      "ror %[out] \n\t"
+
+      "lsl __tmp_reg__  \n\t"   /* 5 */
+      "ror %[out] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* 6 */
+      "ror %[out] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* 7 */
+      "ror %[out] \n\t"
+      "lsl __tmp_reg__  \n\t"   /* 8 */
+      "ror %[out] \n\t"
+      : [out] "=r" (result) : [in] "r" (x));
+  return (result);
+}
+
 

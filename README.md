@@ -10,3 +10,13 @@ otherwise randomly display shifty, surprised, happy, sad, crying or mad eyes.
 Details can be found at
 http://gaz77a.github.io/LedEyes/
 
+Video of my box-o-lantern
+https://youtu.be/Hgco6gBZpvw
+
+## Candle Effect
+
+White LED with timer to simulate candle for use inside a halloween pumpkin.
+Uses Arduino TimerOne library to update LED intensity.
+LED requires PWM output, like pin 5 in this current example.
+
+
